@@ -67,4 +67,98 @@ defmodule QseeKeymaster do
 
   @doc "Interpret a response's leading signed 32-bit status."
   def status(<<status::little-signed-32, rest::binary>>), do: {status, rest}
+
+  ## --- key operations ---
+  ##
+  ## These encode an AOSP Keymaster message with `QseeKeymaster.Message`,
+  ## send it under the matching command ID, and decode the response the
+  ## trusted application returns. They are the crypto surface: generate or
+  ## import a hardware-bound key, then run an operation over begin/update/
+  ## finish. The response framing assumes the application returns the AOSP
+  ## message body directly, its leading word the Keymaster error.
+  ##
+  ## On the Fairphone 3's current kernel these block: key operations call
+  ## back into the OS through a QSEE listener, which the mainline qseecom
+  ## SCM path does not service (see the module docs). They are complete and
+  ## will work once the kernel gains listener handling.
+
+  alias QseeKeymaster.{Message, Tag}
+
+  @version Message.default_version()
+
+  @doc "Generate a hardware-bound key from a parameter set. Returns the key blob and its characteristics."
+  def generate_key(params, opts \\ []) do
+    with {:ok, rsp} <- send(:generate_key, Message.generate_key(params), rsp_len(opts), opts) do
+      Message.decode_key_response(rsp)
+    end
+  end
+
+  @doc "Import external key material under a parameter set and key format."
+  def import_key(params, key_format, key_data, opts \\ []) do
+    body = Message.import_key(params, Tag.key_format(key_format), key_data)
+
+    with {:ok, rsp} <- send(:import_key, body, rsp_len(opts), opts) do
+      Message.decode_key_response(rsp)
+    end
+  end
+
+  @doc "Export the public part of a key in the given format."
+  def export_key(key_blob, key_format, params \\ [], opts \\ []) do
+    body = Message.export_key(params, Tag.key_format(key_format), key_blob)
+
+    with {:ok, rsp} <- send(:export_key, body, rsp_len(opts), opts) do
+      Message.decode_export(rsp)
+    end
+  end
+
+  @doc "Read a key's enforced and unenforced characteristics."
+  def get_key_characteristics(key_blob, params \\ [], opts \\ []) do
+    body = Message.get_key_characteristics(key_blob, params)
+
+    with {:ok, rsp} <- send(:get_key_characteristics, body, rsp_len(opts), opts) do
+      Message.decode_characteristics(rsp)
+    end
+  end
+
+  @doc """
+  Begin an operation for a purpose over a key. Returns an operation handle
+  and any output parameters (an initialisation vector, for example).
+
+  `purpose` is a `:purpose` enum (`:encrypt`, `:decrypt`, `:sign`,
+  `:verify`, `:derive_key`, `:wrap`) or an integer.
+  """
+  def begin(purpose, key_blob, params \\ [], opts \\ []) do
+    body = Message.begin(Tag.enum_value(:purpose, purpose), key_blob, params)
+
+    with {:ok, rsp} <- send(:begin, body, rsp_len(opts), opts) do
+      Message.decode_begin(rsp, @version)
+    end
+  end
+
+  @doc "Feed input to an operation. Returns output, bytes consumed and output parameters."
+  def update(op_handle, input, params \\ [], opts \\ []) do
+    body = Message.update(op_handle, input, params, @version)
+
+    with {:ok, rsp} <- send(:update, body, rsp_len(opts), opts) do
+      Message.decode_update(rsp, @version)
+    end
+  end
+
+  @doc "Finish an operation, optionally with trailing input and a signature to verify."
+  def finish(op_handle, input \\ <<>>, signature \\ <<>>, params \\ [], opts \\ []) do
+    body = Message.finish(op_handle, signature, params, input, @version)
+
+    with {:ok, rsp} <- send(:finish, body, rsp_len(opts), opts) do
+      Message.decode_finish(rsp, @version)
+    end
+  end
+
+  @doc "Abort an operation, releasing its handle."
+  def abort(op_handle, opts \\ []) do
+    with {:ok, rsp} <- send(:abort, Message.abort(op_handle), rsp_len(opts), opts) do
+      Message.decode_abort(rsp)
+    end
+  end
+
+  defp rsp_len(opts), do: Keyword.get(opts, :rsp_len, @default_rsp_len)
 end

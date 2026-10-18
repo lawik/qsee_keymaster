@@ -34,3 +34,60 @@ defmodule QseeKeymasterTest do
     assert QseeKeymaster.request(:abort, <<7::little-64>>) == <<0x113::little-32, 7::little-64>>
   end
 end
+
+defmodule QseeKeymaster.KeyOpsTest do
+  use ExUnit.Case, async: true
+
+  alias QseeKeymaster, as: KM
+  alias QseeKeymaster.{Command, Message, ParamSet}
+
+  # A fake transport that decodes the command ID and replies with a
+  # canned AOSP response body, so the high-level API is exercised end to end.
+  defp transport(replies) do
+    fn <<cmd::little-32, body::binary>>, _rsp_len ->
+      name = Command.name(cmd)
+      send(self(), {:sent, name, body})
+      {:ok, Map.fetch!(replies, name)}
+    end
+  end
+
+  test "generate_key encodes params and decodes the key response" do
+    enforced = ParamSet.encode([{:origin, :generated}])
+    unenforced = ParamSet.encode([{:key_size, 256}])
+    reply = <<0::little-signed-32, 5::little-32, "BLOB!">> <> enforced <> unenforced
+
+    opts = [transport: transport(%{generate_key: reply})]
+    params = [{:algorithm, :aes}, {:key_size, 256}]
+
+    assert {:ok,
+            %{
+              key_blob: "BLOB!",
+              enforced: [{:origin, :generated}],
+              unenforced: [{:key_size, 256}]
+            }} =
+             KM.generate_key(params, opts)
+
+    assert_received {:sent, :generate_key, body}
+    assert body == Message.generate_key(params)
+  end
+
+  test "begin maps the purpose atom and decodes handle plus output params" do
+    out = ParamSet.encode([{:nonce, "iv"}])
+    reply = <<0::little-signed-32, 42::little-64>> <> out
+    opts = [transport: transport(%{begin: reply})]
+
+    assert {:ok, %{op_handle: 42, output_params: [{:nonce, "iv"}]}} =
+             KM.begin(:encrypt, "KEYBLOB", [{:padding, :none}], opts)
+
+    assert_received {:sent, :begin, <<0::little-32, 7::little-32, "KEYBLOB", _::binary>>}
+  end
+
+  test "finish decodes output and surfaces a keymaster error" do
+    reply = <<0::little-signed-32, 3::little-32, "CT!">> <> ParamSet.encode([])
+    opts = [transport: transport(%{finish: reply})]
+    assert {:ok, %{output: "CT!"}} = KM.finish(42, "pt", <<>>, [], opts)
+
+    err = [transport: fn _r, _l -> {:ok, <<-30::little-signed-32>>} end]
+    assert {:error, {:keymaster, -30}} = KM.finish(42, "pt", <<>>, [], err)
+  end
+end

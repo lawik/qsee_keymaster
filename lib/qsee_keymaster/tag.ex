@@ -170,7 +170,7 @@ defmodule QseeKeymaster.Tag do
   end
 
   @doc "Encode an enumeration value (atom or integer) for a tag."
-  def enum_value(tag, value) when is_integer(value), do: value
+  def enum_value(_tag, value) when is_integer(value), do: value
 
   def enum_value(tag, value) when is_atom(value) do
     Map.fetch!(Map.fetch!(@enums, tag), value)
