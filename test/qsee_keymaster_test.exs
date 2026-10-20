@@ -91,3 +91,26 @@ defmodule QseeKeymaster.KeyOpsTest do
     assert {:error, {:keymaster, -30}} = KM.finish(42, "pt", <<>>, [], err)
   end
 end
+
+defmodule QseeKeymaster.TransportDeviceTest do
+  use ExUnit.Case, async: true
+
+  alias QseeKeymaster.Transport.Device
+
+  test "a missing device is reported, not created" do
+    path =
+      Path.join(System.tmp_dir!(), "qseecom_raw_missing_#{System.unique_integer([:positive])}")
+
+    assert {:error, :enoent} = Device.lookup(device: path)
+    refute File.exists?(path)
+  end
+
+  test "a regular file is refused" do
+    path =
+      Path.join(System.tmp_dir!(), "qseecom_raw_regular_#{System.unique_integer([:positive])}")
+
+    File.write!(path, "")
+    assert {:error, {:not_a_device, :regular}} = Device.send(<<1, 2, 3>>, 16, device: path)
+    File.rm!(path)
+  end
+end

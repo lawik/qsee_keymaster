@@ -43,7 +43,7 @@ defmodule QseeKeymaster.Transport.Device do
     app = Keyword.get(opts, :app, @default_app)
     packet = <<byte_size(app)::little-32, rsp_len::little-32>> <> app <> request
 
-    with {:ok, fd} <- :file.open(device, [:raw, :binary, :read, :write]) do
+    with {:ok, fd} <- open(device) do
       try do
         with :ok <- :file.write(fd, packet),
              {:ok, <<status::little-signed-32, _app_id::little-32, rsp::binary>>} <-
@@ -71,7 +71,7 @@ defmodule QseeKeymaster.Transport.Device do
     app = Keyword.get(opts, :app, @default_app)
     packet = <<byte_size(app)::little-32, 0::little-32>> <> app
 
-    with {:ok, fd} <- :file.open(device, [:raw, :binary, :read, :write]) do
+    with {:ok, fd} <- open(device) do
       try do
         with :ok <- :file.write(fd, packet),
              {:ok, <<0::little-signed-32, app_id::little-32>>} <- :file.read(fd, 8) do
@@ -84,6 +84,17 @@ defmodule QseeKeymaster.Transport.Device do
       after
         :file.close(fd)
       end
+    end
+  end
+
+  # Opening for write creates a regular file where the device is missing
+  # (on devtmpfs, even), and every later read then returns :eof. Only open
+  # an existing character device.
+  defp open(device) do
+    case File.stat(device) do
+      {:ok, %File.Stat{type: :device}} -> :file.open(device, [:raw, :binary, :read, :write])
+      {:ok, %File.Stat{type: type}} -> {:error, {:not_a_device, type}}
+      {:error, reason} -> {:error, reason}
     end
   end
 end
